@@ -1,0 +1,754 @@
+<html>
+<body style='margin: 0px; background-image: -webkit-gradient(linear, left top, left bottom, from(#0088bf), to(#000000));'>
+<script src="three.min.js"></script>
+<script src="CanvasRenderer.js"></script>
+<script src="Projector.js"></script>
+<script src="TrackballControls.js"></script>
+<script src="OrthographicTrackballControls.js"></script>
+<script src="paper.js"></script>
+<script src="d3-threeD.js"></script>
+<script src="jquery-1.9.0.js"></script>
+<script src="keypress-2.1.4.min.js"></script>
+<!-- <script src="mespeak/mespeak.js"></script> -->
+<script src="Tone.js"></script>
+
+
+<canvas id="dummycanvas" style="display:none;"></canvas>
+
+<script>
+
+var scene, camera, renderer;
+var controls;
+var player_colors = ['red', 'yellow', 'teal'];
+var matShapes = new THREE.MeshLambertMaterial( { color: 0x00ff00, overdraw:.9 } );
+var matIndicator = new THREE.MeshBasicMaterial( { color: 0xffffff, overdraw:.9 } );
+
+var terrain_mesh;
+var terrain_paths;
+var mouse = {};
+var tanks;// = [];
+var curentTankIndex = 0;
+var listener = new window.keypress.Listener();
+var keyState = {};
+var tankScale = .3;
+var camFactor = .75;
+var currentPower = 0;
+var currentProjectile = null;
+var turnFinished = false;
+var DEATH_LEVEL = -1000;
+paper.project = new paper.Project("dummycanvas");
+
+init();
+initVoice()
+animate();
+
+function makeProjectile(){
+    var material = new THREE.MeshPhongMaterial( { color: 0x000000, specular: 0xffffff} );
+    var geometry = new THREE.SphereGeometry( 10, 5, 5);
+    var round_mesh = new THREE.Mesh( geometry, material);
+    return round_mesh;
+}
+
+function makeTank(color){
+    var material = new THREE.MeshLambertMaterial( { color: color } );
+    material.overdraw = 0.9; // or some number between 0 and 1 -- for preventing gaps with canvas renderer
+
+
+    var geometry = new THREE.BoxGeometry( 200, 40, 120, 6, 2,4);
+    var mesh1 = new THREE.Mesh();
+    var base_mesh = new THREE.Mesh( geometry, material);
+    mesh1.add(base_mesh);
+
+    geometry = new THREE.SphereGeometry( 50, 10, 10, 0, Math.PI*2, 0, Math.PI*0.5);
+    var round_mesh = new THREE.Mesh( geometry, material);
+    mesh1.add(round_mesh);
+
+    geometry = new THREE.CylinderGeometry( 10, 10, 100, 5, 4);
+    geometry.translate(0,50,0);
+    var barrel_mesh = new THREE.Mesh( geometry, material);
+    mesh1.add(barrel_mesh);
+
+    geometry = new THREE.CylinderGeometry( 100, 10, 700, 5, 4);
+    geometry.translate(0,350,0);
+    var power_mesh = new THREE.Mesh( geometry, matIndicator);
+    var power_obj = new THREE.Object3D();
+    power_obj.add(power_mesh);
+    power_obj.position.y+=0;
+    power_obj.position.z+=200;
+
+    mesh1.add(power_obj);
+
+    geometry = new THREE.BoxGeometry( 40, 40, 40);
+    geometry.translate(0,1000,200);
+    var indicator_mesh = new THREE.Mesh( geometry, matIndicator);
+    mesh1.add(indicator_mesh);
+
+    var ang = 0;
+    var facingSign = 1;
+    mesh1.setBarrelAngle = function(angle){
+        barrel_mesh.rotation.z = angle;
+        indicator_mesh.rotation.z = angle;
+        power_obj.rotation.z = angle;
+        ang = angle;
+    };
+    mesh1.getBarrelAngle = function(){
+        return ang;
+    };
+    mesh1.setBaseAngle = function(angle){
+        angle = angle % (Math.PI*2);
+        base_mesh.rotation.z = angle;
+        round_mesh.rotation.z = angle;
+    };
+    mesh1.setFacingSign = function(sign){
+        if(facingSign != sign){
+            //flip barrel angle
+            mesh1.setBarrelAngle(mesh1.getBarrelAngle()*-1);
+            facingSign = sign;
+        }
+    };
+    mesh1.getFacingSign = function(){
+        return facingSign;
+    };
+    mesh1.setPower = function(power){
+        if(power > 0){
+          power_mesh.visible=true;
+        }else{
+          power_mesh.visible=false;
+        }
+        power_mesh.scale.set(1, power, 1);
+    };
+    mesh1.setIndicatorVisibility = function(visible){
+        indicator_mesh.visible=visible;
+    };
+    mesh1.setBarrelAngle(Math.PI/4);
+    mesh1.setPower(0);
+    mesh1.setIndicatorVisibility(false);
+    mesh1.scale.set(tankScale,tankScale,tankScale);
+
+    mesh1.xvel = 0;
+    mesh1.yvel = 0;
+    return mesh1;
+}
+
+function init() {
+
+    scene = new THREE.Scene();
+
+    camera = new THREE.PerspectiveCamera( 75, window.innerWidth / window.innerHeight, 1, 10000 );
+    camera = new THREE.OrthographicCamera( window.innerWidth / - 2, window.innerWidth / 2, window.innerHeight / 2, window.innerHeight / - 2, - 500, 1000 );
+    camera.position.x = 0;
+    camera.position.y = 100;
+    camera.position.z = 500;
+    camera.updateProjectionMatrix();
+
+
+
+    var light = new THREE.DirectionalLight(0xffffff);
+    light.position.set(0,1000,500);
+    scene.add(light);
+
+
+
+
+
+
+
+
+    //renderer = new THREE.CanvasRenderer({ alpha: true });
+    renderer = new THREE.WebGLRenderer({ alpha: true });
+    renderer.setSize( window.innerWidth, window.innerHeight );
+
+    document.body.appendChild( renderer.domElement );
+    controls = new THREE.OrthographicTrackballControls( camera, renderer.domElement.parentElement );
+    controls.target.set(0,0,0);
+    controls.rotateSpeed = 2.0;
+    controls.zoomSpeed = 1.2;
+    controls.panSpeed = 0.8;
+    controls.enabled = true;
+    controls.noZoom = true;
+    controls.noRotate = true;
+    onWindowResize();
+    setTimeout(onWindowResize, 100);
+    window.addEventListener( 'resize', onWindowResize, false );
+
+    initGame();
+
+
+}
+
+function initGame(){
+    if(tanks){
+      for(var i = 0; i < tanks.length; i++){
+        scene.remove(tanks[i]);
+      }
+    }
+    tanks = [];
+    curentTankIndex = 0;
+    currentPower = 0;
+    currentProjectile = null;
+    turnFinished = false;
+
+    doTerrain();
+    announceTurn();
+}
+
+function angleIsFalling(angle){
+    return angle > Math.PI/2 || angle < -Math.PI/2;
+};
+
+function tryToStopFalling(tank){
+  var futureCurveLocation = getCurveLocationIfPointIsInsideTerrain(tank.position.x, tank.position.y, tank.position.x + tank.xvel, tank.position.y + tank.yvel);
+
+  if(futureCurveLocation){
+      var newAngle = getBaseAngleFromCurveLocation(futureCurveLocation);
+      //if(! angleIsFalling(newAngle)){
+          moveTankToCurveLocation(tank, futureCurveLocation);
+          var velAngle = Math.atan2(tank.yvel, tank.xvel);
+          var angDiff = newAngle-velAngle;
+          var sinDiff = - Math.cos(angDiff);
+          var velMag = Math.sqrt(tank.xvel*tank.xvel + tank.yvel*tank.yvel);
+          //tank.xvel = 0;
+          //tank.yvel = 0;
+          tank.tvel = velMag * sinDiff;
+      //}
+
+  }
+}
+
+function startNextTurn(){
+  turnFinished = false;
+  curentTankIndex++;
+  curentTankIndex = curentTankIndex % tanks.length;
+  announceTurn();
+}
+
+function announceTurn(){
+  var color = player_colors[curentTankIndex];
+  speak(color+"'s turn!");
+}
+
+var ang = 0;
+function animate() {
+
+    requestAnimationFrame( animate );
+     ang +=.03;
+//     tank1.setBaseAngle(ang);
+//     tank2.setBarrelAngle(ang*2);
+
+    //doTerrain();
+
+    controls.update();
+    renderer.render( scene, camera );
+
+    for(var i = 0; i < tanks.length; i++){
+        var tank = tanks[i];
+        //tank.setPower((Math.cos(ang)));
+        if(tank.currentlyAtLocation){
+          var aim_delta = 0;
+          var moveTankDist = 0;
+          if(curentTankIndex == i && ! turnFinished){
+            tank.setIndicatorVisibility(true);
+            if(keyState.left){
+              moveTankDist = 1;
+              tank.setFacingSign(1);
+            }
+            if(keyState.right){
+              moveTankDist = -1;
+              tank.setFacingSign(-1);
+            }
+            if(keyState.up){
+              aim_delta = -.01;
+            }
+            if(keyState.down){
+              aim_delta = .01;
+            }
+            if(keyState.space && currentPower < 1){
+              currentPower+=.02;
+              tank.setPower(currentPower);
+            }else{
+              if(currentPower > 0){
+                turnFinished = true;
+                var projectile = makeProjectile();
+                scene.add(projectile);
+                currentProjectile = projectile;
+                currentProjectile.xvel = -30*currentPower*Math.sin(tank.getBarrelAngle());
+                currentProjectile.yvel = 30*currentPower*Math.cos(tank.getBarrelAngle());
+                currentProjectile.position.x = tank.currentlyAtLocation.point.x+currentProjectile.xvel;
+                currentProjectile.position.y = tank.currentlyAtLocation.point.y+currentProjectile.yvel;
+                tank.setPower(0);
+                currentPower=0;
+                launch();
+              }
+            }
+          }else{
+            // not this tanks turn
+            tank.setIndicatorVisibility(false);
+          }
+
+          if(aim_delta){
+            tank.setBarrelAngle(tank.getBarrelAngle()+aim_delta*tank.getFacingSign());
+          }else{
+            if(Math.abs(Math.sign(tank.getBarrelAngle()) - tank.getFacingSign()) > .01){
+              //swap the facing sign without swapping the angle
+              tank.setFacingSign(tank.getFacingSign() * -1);
+              tank.setBarrelAngle(tank.getBarrelAngle() * -1);
+            }
+          }
+
+          var currentAngle = getBaseAngleFromCurveLocation(tank.currentlyAtLocation);
+
+          /*
+          if(moveTankDist == 0){
+            // do slipping
+            if(currentAngle > Math.PI/4){
+              moveTankDist = 1;
+            }
+            if(currentAngle < - Math.PI/4){
+              moveTankDist = -1;
+            }
+          }
+          */
+
+          if(! tank.tvel){
+            tank.tvel = 0;
+          }
+          tank.tvel += moveTankDist;
+          tank.tvel *= .9;
+
+
+          if(tank.currentlyAtLocation){
+
+            var oldLocation = tank.currentlyAtLocation;
+            var newOffset = (oldLocation.offset+tank.tvel) % oldLocation.path.length;
+            if(newOffset < 0){
+              newOffset += oldLocation.path.length;
+            }
+            var newLocation = oldLocation.path.getLocationAt(newOffset);
+            var dx = newLocation.point.x - oldLocation.point.x;
+            var dy = newLocation.point.y - oldLocation.point.y;
+
+            var dxPlusG = tank.xvel;
+            var dyPlusG = tank.yvel - .3;
+
+
+            //if((Math.abs(dx) > 2 && tank.yvel > (dy+1.0))){
+            if(! oldLocation.path.contains(new paper.Point(oldLocation.point.x + dxPlusG, oldLocation.point.y + dyPlusG))){
+                // If it wants to go much greater abs X and the track is going down
+                //falling
+                tank.currentlyAtLocation = null;
+                // keep last velocity
+            }else{
+                moveTankToCurveLocation(tank, newLocation);
+                tank.xvel = dx;
+                tank.yvel = dy;
+            }
+
+
+          }
+        }else{
+            //falling
+            if(tank.position.y < DEATH_LEVEL){
+              initGame();
+            }else{
+              tank.position.x += tank.xvel;
+              tank.position.y += tank.yvel;
+              tank.yvel -= .3;
+              tryToStopFalling(tank);
+            }
+        }
+    }
+
+    if(currentProjectile){
+
+
+        if(currentProjectile.position.y < DEATH_LEVEL){
+          scene.remove(currentProjectile);
+          currentProjectile = null;
+          startNextTurn();
+        }else{
+
+            var cur_point = new paper.Point(currentProjectile.position.x, currentProjectile.position.y);
+            if(getCurveLocationIfPointIsInsideTerrain(currentProjectile.position.x, currentProjectile.position.y, currentProjectile.position.x + currentProjectile.xvel, currentProjectile.position.y + currentProjectile.yvel)){
+                scene.remove(currentProjectile);
+                currentProjectile = null;
+
+                //explode here
+                explosion();
+                var circlePath = new paper.Path.Circle({
+                  center: cur_point,
+                  radius: 200
+                });
+                var new_terrain_paths = [];
+                for(var q = 0; q < terrain_paths.length; q++){
+                    var path = terrain_paths[q].subtract(circlePath);
+                    if(path && path.curves.length > 0){
+                      new_terrain_paths.push(path);
+                    }
+                }
+                terrain_paths = new_terrain_paths;
+                regenTerrainMesh();
+                for(var i = 0; i < tanks.length; i++){
+                  tanks[i].currentlyAtLocation = null;
+                  tryToStopFalling(tanks[i]);
+                }
+                setTimeout(function(){
+                  startNextTurn();
+                }, 1000);
+            }else{
+                currentProjectile.position.x += currentProjectile.xvel;
+                currentProjectile.position.y += currentProjectile.yvel;
+                currentProjectile.yvel -= .3;
+            }
+        }
+    }
+}
+
+function getCurveLocationIfPointIsInsideTerrain(x, y, x2, y2){
+    var cur_point = new paper.Point(x, y);
+    var fut_point = new paper.Point(x2, y2);
+    var line = new paper.Path.Line(cur_point, fut_point);
+
+    for(var j = 0; j < terrain_paths.length; j++){
+        if(terrain_paths[j].intersects(line)){
+            var path = terrain_paths[j];
+            return path.getNearestLocation(fut_point);
+        }
+    }
+    return null;
+}
+
+window.addEventListener( 'resize', onWindowResize, false );
+
+function onWindowResize() {
+  renderer.setPixelRatio( window.devicePixelRatio );
+  // notify the renderer of the size change
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  // update the camera
+  camera.left = -window.innerWidth / camFactor;
+  camera.right = window.innerWidth / camFactor;
+  camera.top = window.innerHeight / camFactor;
+  camera.bottom = -window.innerHeight / camFactor;
+  camera.updateProjectionMatrix();
+}
+
+
+$(window).on('mousemove', function(event){
+  mouse.x = ( event.clientX);
+  mouse.y = - ( event.clientY);
+  //debugger;
+
+});
+
+function getBaseAngleFromCurveLocation(location){
+  return location.normal.angleInRadians -Math.PI/2;
+}
+
+function moveTankToCurveLocation(tank, location){
+  var groundOffset = 0.5*40*tankScale;
+  tank.position.x = location.point.x+groundOffset*(location.normal.x);
+  tank.position.y = location.point.y+groundOffset*(location.normal.y);
+
+  tank.setBaseAngle(getBaseAngleFromCurveLocation(location));
+  tank.currentlyAtLocation = (location);
+}
+
+
+
+
+function doTerrain(){
+  paper.project.clear();
+
+
+
+
+
+
+
+
+  // from https://groups.google.com/forum/#!topic/paperjs/UD8L0MTyReQ
+  var overlaps = function(path, other) {
+    return !(path.getIntersections(other).length === 0);
+  };
+
+  var mergeOne = function(path, others) {
+    var i, merged, other, union, _i, _len, _ref;
+    for (i = _i = 0, _len = others.length; _i < _len; i = ++_i) {
+      other = others[i];
+      if (overlaps(path, other)) {
+        union = path.unite(other);
+        merged = mergeOne(union, others.slice(i + 1));
+        return (_ref = others.slice(0, i)).concat.apply(_ref, merged);
+      }
+    }
+    return others.concat(path);
+  };
+
+  var merge = function(paths) {
+    var path, result, _i, _len;
+    result = [];
+    for (_i = 0, _len = paths.length; _i < _len; _i++) {
+      path = paths[_i];
+      result = mergeOne(path, result);
+    }
+    return result;
+  };
+
+  var xoff = -1000;
+  var yoff = -100;
+  var ballPositions = [];
+  for(var i = 0; i < 10; i++){
+    ballPositions.push([i*80+xoff, Math.random()*500+yoff]);
+  }
+  for(var i = 0; i < 10; i++){
+    ballPositions.push([1200+i*80+xoff, Math.random()*500+yoff]);
+  }
+  for(var i = 0; i < 30; i++){
+    ballPositions.push([-200+i*80+xoff, Math.random()*500-800+yoff]);
+  }
+  var crossing_lines = [];
+  //for(var i = 0; i < 10; i++){
+  //  var x = 100+i*220+xoff;
+  //  crossing_lines.push(new paper.Path.Line(new paper.Point(x, 2000+yoff), new paper.Point(x, -2000+yoff)));
+  //}
+  for(var i = 0; i < 2; i++){
+    var x = 300+i*1000+xoff;
+    crossing_lines.push(new paper.Path.Line(new paper.Point(x, 2000+yoff), new paper.Point(x, -2000+yoff)));
+  }
+
+  var handle_len_rate = 2.4;
+  var circlePaths = [];
+  var radius = 50;
+  for (var i = 0, l = ballPositions.length; i < l; i++) {
+    var circlePath = new paper.Path.Circle({
+      center: ballPositions[i],
+      radius: 50
+    });
+    circlePaths.push(circlePath);
+  }
+/*
+  var largeCircle = new paper.Path.Circle({
+    center: [((mouse.x-500)*10)||0, ((mouse.y+500)*10)||0],
+    radius: 100
+  });
+
+  circlePaths.push(largeCircle);
+*/
+  var connections = new paper.Group();
+  var unmerged = [];
+  function generateConnections(paths) {
+    // Remove the last connection paths:
+    connections.children = [];
+
+    for (var i = 0, l = paths.length; i < l; i++) {
+      for (var j = i - 1; j >= 0; j--) {
+        var path = metaball(paths[i], paths[j], 0.5, handle_len_rate, 300);
+        if (path) {
+          connections.appendTop(path);
+          unmerged.push(path);
+        }
+      }
+    }
+  }
+
+  generateConnections(circlePaths);
+
+  for(var i = 0; i < circlePaths.length; i++){
+    unmerged.push(circlePaths[i]);
+  }
+  var merged = merge(unmerged);
+
+
+  terrain_paths = merged;
+
+  //remove holes
+  for(var i = 0; i < merged.length; i++){
+    if(merged[i].firstChild){
+      merged[i] = merged[i].firstChild;
+    }
+  }
+
+
+  // find crossing points
+  for(var i = 0; i < crossing_lines.length; i++){
+    var this_lines_crossings = [];
+    for(var h = 0; h < merged.length; h++){
+      var crossings_path = merged[h].getCrossings(crossing_lines[i]);
+      this_lines_crossings = this_lines_crossings.concat(crossings_path);
+      //for(var x = 0; x < crossings_path.length; x++){
+      //  this_lines_crossings.push(crossings_path[x].point);
+      //}
+    }
+    this_lines_crossings.sort(function(a, b){
+      return b.point.y - a.point.y;
+    });
+    var top_crossing = this_lines_crossings[0];
+    if(top_crossing){
+        var tank = makeTank(player_colors[i]);
+        tank.position.x = top_crossing.point.x;
+        tank.position.y = top_crossing.point.y+300;
+        //moveTankToCurveLocation(tank, top_crossing);
+
+        scene.add( tank );
+        tanks.push(tank);
+    }
+
+  }
+
+  regenTerrainMesh();
+
+}
+
+function regenTerrainMesh(){
+  if(terrain_mesh){
+    scene.remove(terrain_mesh);
+  }
+  var all_paths = new paper.Group();
+  for(var i = 0; i < terrain_paths.length; i++){
+    all_paths.appendTop(terrain_paths[i]);
+  }
+  terrain_mesh = new THREE.Mesh();
+  var svg = all_paths.exportSVG({});
+  if(1){
+    $(svg).attr('style', 'fill: black;    transform: scale(.3,-.3) translate(1500px, -500px);');
+    $('body').append($('<svg width=1000 height=1000>').append(svg));
+  }
+  $(svg).find('path').each(function(){
+    var path = this;
+    var shape = transformSVGPathExposed($(path).attr('d'));
+
+    var options = {
+                      amount: 100,
+                      bevelEnabled: false,
+                      curveSegments: 4,
+                      steps: 1
+                  };
+
+    var geometry = new THREE.ExtrudeGeometry(shape, options);
+    //geometry.mergeVertices();
+    //geometry.computeVertexNormals();
+
+    var mesh = new THREE.Mesh(geometry, matShapes);
+    mesh.position.z -= 50;
+
+    terrain_mesh.add(mesh);
+  });
+
+  scene.add(terrain_mesh);
+}
+
+
+function explosion(){
+  var plucky = new Tone.PluckSynth().toMaster();
+  plucky.triggerAttack("C0");
+}
+
+function launch(){
+  var synth = new Tone.MembraneSynth().toMaster();
+  synth.envelope.release = .05;
+  synth.pitchDecay = .05;
+  synth.triggerAttackRelease("C3", "16n");
+}
+
+// ---------------------------------------------
+function metaball(ball1, ball2, v, handle_len_rate, maxDistance) {
+	var center1 = ball1.position;
+	var center2 = ball2.position;
+	var radius1 = ball1.bounds.width / 2;
+	var radius2 = ball2.bounds.width / 2;
+	var pi2 = Math.PI / 2;
+	var d = center1.getDistance(center2);
+	var u1, u2;
+
+	if (radius1 == 0 || radius2 == 0)
+		return;
+
+	if (d > maxDistance || d <= Math.abs(radius1 - radius2)) {
+		return;
+	} else if (d < radius1 + radius2) { // case circles are overlapping
+		u1 = Math.acos((radius1 * radius1 + d * d - radius2 * radius2) /
+				(2 * radius1 * d));
+		u2 = Math.acos((radius2 * radius2 + d * d - radius1 * radius1) /
+				(2 * radius2 * d));
+	} else {
+		u1 = 0;
+		u2 = 0;
+	}
+	var angle1 = (center2.__subtract(center1)).getAngleInRadians();
+	var angle2 = Math.acos((radius1 - radius2) / d);
+	var angle1a = angle1 + u1 + (angle2 - u1) * v;
+	var angle1b = angle1 - u1 - (angle2 - u1) * v;
+	var angle2a = angle1 + Math.PI - u2 - (Math.PI - u2 - angle2) * v;
+	var angle2b = angle1 - Math.PI + u2 + (Math.PI - u2 - angle2) * v;
+	var p1a = center1.__add(getVector(angle1a, radius1));
+	var p1b = center1.__add(getVector(angle1b, radius1));
+	var p2a = center2.__add(getVector(angle2a, radius2));
+	var p2b = center2.__add(getVector(angle2b, radius2));
+  //debugger;
+	// define handle length by the distance between
+	// both ends of the curve to draw
+	var totalRadius = (radius1 + radius2);
+	var d2 = Math.min(v * handle_len_rate, (p1a.__subtract(p2a)).length / totalRadius);
+
+	// case circles are overlapping:
+	d2 *= Math.min(1, d * 2 / (radius1 + radius2));
+
+	radius1 *= d2;
+	radius2 *= d2;
+
+	var path = new paper.Path({
+		segments: [p1a, p2a, p2b, p1b],
+		style: ball1.style,
+		closed: true
+	});
+	var segments = path.segments;
+	segments[0].handleOut = getVector(angle1a - pi2, radius1);
+	segments[1].handleIn = getVector(angle2a + pi2, radius2);
+	segments[2].handleOut = getVector(angle2b - pi2, radius2);
+	segments[3].handleIn = getVector(angle1b + pi2, radius1);
+	return path;
+}
+
+// ------------------------------------------------
+function getVector(radians, length) {
+	return new paper.Point({
+		// Convert radians to degrees:
+		angle: radians * 180 / Math.PI,
+		length: length
+	});
+}
+
+
+
+var to_listen = "w a s d left up right down space".split(" ");
+for(var i = 0; i < to_listen.length; i++){
+  (function(key){
+    listener.register_combo({
+      "keys"              : key,
+      "on_keydown"        : function(){keyState[key] = true;},
+      "on_keyup"          : function(){delete keyState[key]},
+
+    });
+  })(to_listen[i]);
+}
+
+/*
+function initVoice(){
+    meSpeak.loadConfig("mespeak/mespeak_config.json");
+    meSpeak.loadVoice("mespeak/voices/en/en-us.json");
+}
+
+function speak(str, callback){
+    if(meSpeak && meSpeak.isConfigLoaded()){
+      try{
+        meSpeak.speak(str, {variant: 'klatt', pitch:15, wordgap:3});
+      }catch(e){
+        console.log(e, e.stack);
+      }
+    }
+}
+*/
+function initVoice(){}
+
+function speak(){}
+
+</script>
